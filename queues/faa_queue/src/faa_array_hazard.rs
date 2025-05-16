@@ -93,14 +93,14 @@ struct Node<T> {
 }
 
 impl<T> Node<T> {
-    unsafe fn new_with_item_ptr(item_ptr: *mut T) -> *mut Self {
+    fn new_with_item_ptr(item_ptr: *mut T) -> *mut Self {
         let items: [StdAtomicPtr<T>; BUFFER_SIZE] =
             std::array::from_fn(|_| StdAtomicPtr::new(ptr::null_mut()));
         items[0].store(item_ptr, Relaxed);
         let boxed = Box::new(Node {
             deqidx: AtomicUsize::new(0),
             enqidx: AtomicUsize::new(1),
-            next: AtomicPtr::new(ptr::null_mut()),
+            next: unsafe { AtomicPtr::new(ptr::null_mut()) },
             items,
         });
         Box::into_raw(boxed)
@@ -163,7 +163,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 }
                 let next_ptr = ltail.next.load_ptr();
                 if next_ptr.is_null() {
-                    let new_node = unsafe { Node::new_with_item_ptr(item_ptr) };
+                    let new_node = Node::new_with_item_ptr(item_ptr);
                     if unsafe { ltail.next.compare_exchange_ptr(ptr::null_mut(), new_node) }.is_ok()
                     {
                         let _ = unsafe { self.tail.compare_exchange_ptr(ltail_ptr, new_node) };
@@ -179,12 +179,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 continue;
             }
             if ltail.items[idx]
-                .compare_exchange(
-                    ptr::null_mut(),
-                    item_ptr,
-                    AcqRel,
-                    Relaxed,
-                )
+                .compare_exchange(ptr::null_mut(), item_ptr, AcqRel, Relaxed)
                 .is_ok()
             {
                 return;
@@ -236,6 +231,12 @@ impl<T: Send + Sync + 'static> Drop for FAAArrayQueue<T> {
         if !ptr.is_null() {
             unsafe { self.domain.retire_node(ptr) };
         }
+    }
+}
+
+impl<T: Send + Sync + 'static> Default for FAAArrayQueue<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

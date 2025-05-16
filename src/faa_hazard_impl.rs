@@ -7,6 +7,7 @@ pub struct FAAhazardBQ<T: Send + Sync + 'static> {
     items: Arc<FAAArrayQueue<T>>,
 }
 
+#[allow(clippy::new_without_default)]
 impl FAAhazardBQ<u8> {
     pub fn new() -> Self {
         FAAhazardBQ {

@@ -178,12 +178,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 continue;
             }
             if ltail_ref.items[idx]
-                .compare_exchange(
-                    ptr::null_mut(),
-                    item_ptr,
-                    AcqRel,
-                    Relaxed,
-                )
+                .compare_exchange(ptr::null_mut(), item_ptr, AcqRel, Relaxed)
                 .is_ok()
             {
                 return;
@@ -240,6 +235,12 @@ impl<T: Send + Sync + 'static> Drop for FAAArrayQueue<T> {
         if !head.is_null() {
             unsafe { guard.defer_destroy(head) };
         }
+    }
+}
+
+impl<T: Send + Sync + 'static> Default for FAAArrayQueue<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

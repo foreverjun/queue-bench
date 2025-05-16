@@ -5,11 +5,12 @@ use crate::SendPtr;
 use bq::bq::BQueue;
 
 pub struct BQ<T> {
-    items: Arc<BQueue<SendPtr <T>>>,
+    items: Arc<BQueue<SendPtr<T>>>,
 }
 unsafe impl<T> Send for BQ<T> {}
 unsafe impl<T> Sync for BQ<T> {}
 
+#[allow(clippy::new_without_default)]
 impl BQ<u8> {
     pub fn new() -> Self {
         BQ {
@@ -29,7 +30,7 @@ impl<T: Send + Sync + Clone> BatchQueue for BQ<T> {
         let mut deq_count = 0;
         let mut iter = self.items.deq_batch(max_to_dequeue);
         while iter.next().is_some() {
-            deq_count+=1;
+            deq_count += 1;
         }
         deq_count
     }

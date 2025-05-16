@@ -1,6 +1,6 @@
+pub mod bq_impl;
 pub mod faa_ebr_impl;
 pub mod faa_hazard_impl;
-pub mod bq_impl;
 
 #[derive(Clone)]
 pub struct SendPtr<T>(*mut T);

@@ -35,6 +35,11 @@ fn random_additional_work(mean: f64) {
     }
 }
 
+type QueueFactory = (
+    &'static str,
+    Box<dyn Fn() -> Arc<dyn BatchQueue<Item = u8> + Send + Sync>>,
+);
+
 const WARMUP_OPERATIONS_PER_THREAD: usize = 100_000;
 
 #[allow(clippy::too_many_arguments)]
@@ -135,7 +140,7 @@ fn run_once(
 }
 
 struct SegBQ<T> {
-    items: Arc<crossbeam_queue::SegQueue<*mut T>>,
+    items: Arc<crossbeam_queue::SegQueue<SendPtr<T>>>,
 }
 unsafe impl<T> Send for SegBQ<T> {}
 unsafe impl<T> Sync for SegBQ<T> {}
@@ -148,12 +153,12 @@ impl SegBQ<u8> {
     }
 }
 
-impl<T: Send + Sync> BatchQueue for SegBQ<T> {
+impl<T: Send + Sync + Clone> BatchQueue for SegBQ<T> {
     type Item = T;
 
     fn enqueue_batch(&self, items_to_enqueue: &[SendPtr<Self::Item>]) {
         for item_ptr in items_to_enqueue {
-            self.items.push(item_ptr.as_ptr());
+            self.items.push(item_ptr.clone());
         }
     }
 
@@ -204,13 +209,13 @@ fn main() {
     writeln!(csv_file, "queue_type,prod,cons,batch_size,additional_work,is_balanced,run_iter,dur_ns,transf,throughput").unwrap();
     println!("Starting benchmarks...");
     println!("Measurement duration per run: {:?}", measurement_duration);
-    let queue_factories: Vec<(
-        &str,
-        Box<dyn Fn() -> Arc<dyn BatchQueue<Item = u8> + Send + Sync>>,
-    )> = vec![
+    let queue_factories: Vec<QueueFactory> = vec![
         ("seg_queue", Box::new(|| Arc::new(SegBQ::<u8>::new()))),
         ("faa_ebr", Box::new(|| Arc::new(FAAebrBQ::<u8>::new()))),
-        ("faa_hazard", Box::new(|| Arc::new(FAAhazardBQ::<u8>::new()))),
+        (
+            "faa_hazard",
+            Box::new(|| Arc::new(FAAhazardBQ::<u8>::new())),
+        ),
         ("BQ", Box::new(|| Arc::new(BQ::<u8>::new()))),
     ];
 

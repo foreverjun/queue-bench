@@ -132,7 +132,7 @@ where
                 return node_ptr;
             } else {
                 let ann_ptr = get_ann_ptr(head_raw);
-                hp.protect_raw(ann_ptr as *mut Ann<T>);
+                hp.protect_raw(ann_ptr);
                 let current_head_raw = self.head.load(Ordering::Acquire);
                 if current_head_raw != head_raw {
                     hp.reset_protection();
@@ -173,13 +173,11 @@ where
                             self.execute_ann(ann_ptr);
                         }
                         hp_ann.reset_protection();
-                    } else {
-                        if !actual_next_ptr.is_null() {
-                            let _ = unsafe {
-                                self.tail
-                                    .compare_exchange_ptr(tail_node_ptr, actual_next_ptr)
-                            };
-                        }
+                    } else if !actual_next_ptr.is_null() {
+                        let _ = unsafe {
+                            self.tail
+                                .compare_exchange_ptr(tail_node_ptr, actual_next_ptr)
+                        };
                     }
                 }
             }
@@ -199,12 +197,16 @@ where
                 return None;
             }
             let next_node_opt = head_node_ref.next.safe_load(&mut hp_next).unwrap();
-            if let Ok(_) = self.head.compare_exchange(
-                head_node_ptr,
-                next_node_ptr,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
+            if self
+                .head
+                .compare_exchange(
+                    head_node_ptr,
+                    next_node_ptr,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 unsafe { Domain::global().retire_node(head_node_ptr) };
                 return Some(unsafe {
                     std::ptr::read(next_node_opt.item.assume_init_ref() as *const _)
@@ -279,7 +281,7 @@ where
 
     fn execute_enqs_batch(&self, batch_req: InternalBatchRequest<T>) {
         let ann_ptr = Box::new(Ann {
-            batch_req: batch_req,
+            batch_req,
             old_head_node: null_mut(),
             old_tail_node: unsafe { AtomicPtr::new(null_mut()) },
         })
@@ -422,9 +424,9 @@ where
 {
     fn new(num_deqs_remaining: usize, last_deq_item: Option<T>, current: *mut Node<T>) -> Self {
         Self {
-            num_deqs_remaining: num_deqs_remaining,
-            last_deq_item: last_deq_item,
-            current: current,
+            num_deqs_remaining,
+            last_deq_item,
+            current,
         }
     }
 }
@@ -461,6 +463,15 @@ where
 {
     fn len(&self) -> usize {
         self.num_deqs_remaining
+    }
+}
+
+impl<T> Default for BQueue<T>
+where
+    T: Send + Sync,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
