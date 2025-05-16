@@ -1,0 +1,18 @@
+workspace = { members = ["queues/faa_queue"] }
+[package]
+name = "queue-bench"
+version = "0.1.0"
+edition = "2021"
+
+[[bench]]
+name = "producer_consumer"
+path = "benches/producer_consumer.rs"
+harness = false 
+
+[dependencies]
+chrono = "0.4.41"
+crossbeam-queue = "0.3.12"
+itertools = "0.14.0"
+rand = "0.9.1"
+rand_distr = "0.5.1"
+faa_queue = { path = "queues/faa_queue" }
