@@ -25,7 +25,7 @@ fn random_additional_work(mean: f64) {
     if mean <= 0.0 {
         return;
     }
-    let p_success = (1.0 / mean).min(1.0).max(f64::EPSILON);
+    let p_success = (1.0 / mean).clamp(f64::EPSILON, 1.0);
     let mut rng = rng();
     let geom = Geometric::new(p_success).expect("Invalid probability for Geometric distribution");
     let num_ops = geom.sample(&mut rng) + 1;
