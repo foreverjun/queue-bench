@@ -1,10 +1,12 @@
 use itertools::iproduct;
+use queue_bench::bq_impl::BQ;
 use queue_bench::faa_ebr_impl::FAAebrBQ;
 use queue_bench::faa_hazard_impl::FAAhazardBQ;
 use queue_bench::BatchQueue;
 use queue_bench::SendPtr;
 use rand::rng;
 use rand_distr::{Distribution, Geometric};
+use std::fs;
 use std::iter;
 use std::path::PathBuf;
 use std::{
@@ -112,11 +114,11 @@ fn run_once(
     barrier.wait(); // start warmup
     barrier.wait(); // finish warmup
     barrier.wait(); // start measurements
-    let measurement_start_time = Instant::now();
+    let start_time = Instant::now();
     thread::sleep(measurement_duration);
     stop_signal.store(true, Ordering::Release);
 
-    let measurement_duration_ns = measurement_start_time.elapsed().as_nanos() as u64;
+    let duration_ns = start_time.elapsed().as_nanos() as u64;
 
     for handle in producer_handles {
         handle.join().expect("Producer thread panicked");
@@ -129,7 +131,7 @@ fn run_once(
             Err(e) => eprintln!("Consumer thread panicked: {:?}", e),
         }
     }
-    (measurement_duration_ns, total_deq)
+    (duration_ns, total_deq)
 }
 
 struct SegBQ<T> {
@@ -156,23 +158,23 @@ impl<T: Send + Sync> BatchQueue for SegBQ<T> {
     }
 
     fn dequeue_batch(&self, max_to_dequeue: usize) -> usize {
-        let mut dequeued_count = 0;
+        let mut deq_count = 0;
         for _ in 0..max_to_dequeue {
             if self.items.pop().is_some() {
-                dequeued_count += 1;
+                deq_count += 1;
             } else {
                 break;
             }
         }
-        dequeued_count
+        deq_count
     }
 }
 
 fn main() {
     let measurement_duration = Duration::from_secs(3);
-    let base_additional_work_values = [512.0];
+    let additional_works = [512.0];
     let balanced_load_options = [true];
-    let num_runs_per_config = 20;
+    let num_runs = 20;
     let batch_sizes_to_test = [64];
 
     let one_to_one = [1, 2, 4, 6, 8, 12, 16, 24].iter().map(|&p| (p, p));
@@ -185,6 +187,8 @@ fn main() {
 
     // Write to csv
     let mut path = PathBuf::from("target");
+    path.push("bench_res");
+    let _ = fs::create_dir_all(&path);
     let filename = format!(
         "prod_cons_{}.csv",
         chrono::Local::now().format("%Y%m%d_%H%M%S")
@@ -197,7 +201,7 @@ fn main() {
         .open(&path)
         .expect("Failed to open CSV file");
 
-    writeln!(csv_file, "queue_type,prod,cons,batch_size,additional_work,is_balanced,run_iter,dur_ns,transf,transf_per_sec").unwrap();
+    writeln!(csv_file, "queue_type,prod,cons,batch_size,additional_work,is_balanced,run_iter,dur_ns,transf,throughput").unwrap();
     println!("Starting benchmarks...");
     println!("Measurement duration per run: {:?}", measurement_duration);
     let queue_factories: Vec<(
@@ -206,17 +210,15 @@ fn main() {
     )> = vec![
         ("seg_queue", Box::new(|| Arc::new(SegBQ::<u8>::new()))),
         ("faa_ebr", Box::new(|| Arc::new(FAAebrBQ::<u8>::new()))),
-        (
-            "faa_hazard",
-            Box::new(|| Arc::new(FAAhazardBQ::<u8>::new())),
-        ),
+        ("faa_hazard", Box::new(|| Arc::new(FAAhazardBQ::<u8>::new()))),
+        ("BQ", Box::new(|| Arc::new(BQ::<u8>::new()))),
     ];
 
     for (batch_size_val, factory_tuple, prod_cons, additional_work, balanced) in iproduct!(
         batch_sizes_to_test.iter().cloned(),
         queue_factories.iter(),
         num_prod_cons,
-        base_additional_work_values.iter().cloned(),
+        additional_works.iter().cloned(),
         balanced_load_options.iter().cloned()
     ) {
         let (queue_name, make_queue_fn) = factory_tuple;
@@ -227,9 +229,9 @@ fn main() {
             queue_name, num_producers, num_consumers, batch_size_val, additional_work, balanced
         );
 
-        let mut run_results_transfers_per_sec = Vec::new();
+        let mut throughputs = Vec::new();
 
-        for run_num in 1..=num_runs_per_config {
+        for run_num in 1..=num_runs {
             let queue_instance = make_queue_fn();
             let (duration_ns, transfers) = run_once(
                 queue_instance,
@@ -240,12 +242,12 @@ fn main() {
                 additional_work,
                 balanced,
             );
-            let transfers_per_sec = if duration_ns > 0 {
+            let throughput = if duration_ns > 0 {
                 transfers as f64 / duration_ns as f64 * 1_000_000_000.0
             } else {
                 0.0
             };
-            run_results_transfers_per_sec.push(transfers_per_sec);
+            throughputs.push(throughput);
 
             writeln!(
                 csv_file,
@@ -259,12 +261,12 @@ fn main() {
                 run_num,
                 duration_ns,
                 transfers,
-                transfers_per_sec
+                throughput
             )
             .unwrap();
             println!(
                 "  Run {}: {} items in {} ns => {:.2} transfers/sec",
-                run_num, transfers, duration_ns, transfers_per_sec
+                run_num, transfers, duration_ns, throughput
             );
         }
     }
