@@ -449,11 +449,11 @@ where
         self.current = unsafe { (*self.current).next.load_ptr() };
         unsafe { Domain::global().retire_node(to_retire) };
         self.num_deqs_remaining -= 1;
-        return unsafe {
+        unsafe {
             Some(std::ptr::read(
                 (*self.current).item.assume_init_ref() as *const _
             ))
-        };
+        }
     }
 }
 
