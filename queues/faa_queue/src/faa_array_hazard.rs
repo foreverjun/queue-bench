@@ -73,9 +73,10 @@
  */
 use crossbeam_utils::CachePadded;
 use haphazard::{AtomicPtr, Domain, Global, HazardPointer};
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 use std::{
     ptr,
-    sync::atomic::{AtomicPtr as StdAtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicPtr as StdAtomicPtr, AtomicUsize},
 };
 
 const BUFFER_SIZE: usize = 1024;
@@ -95,7 +96,7 @@ impl<T> Node<T> {
     unsafe fn new_with_item_ptr(item_ptr: *mut T) -> *mut Self {
         let items: [StdAtomicPtr<T>; BUFFER_SIZE] =
             std::array::from_fn(|_| StdAtomicPtr::new(ptr::null_mut()));
-        items[0].store(item_ptr, Ordering::Relaxed);
+        items[0].store(item_ptr, Relaxed);
         let boxed = Box::new(Node {
             deqidx: AtomicUsize::new(0),
             enqidx: AtomicUsize::new(1),
@@ -154,7 +155,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
             };
             let ltail_ptr = ltail as *const _ as *mut _;
 
-            let idx = ltail.enqidx.fetch_add(1, Ordering::AcqRel);
+            let idx = ltail.enqidx.fetch_add(1, AcqRel);
             if idx > BUFFER_SIZE - 1 {
                 if self.tail.load_ptr() != ltail_ptr {
                     hp_tail.reset_protection();
@@ -181,8 +182,8 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 .compare_exchange(
                     ptr::null_mut(),
                     item_ptr,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
+                    AcqRel,
+                    Relaxed,
                 )
                 .is_ok()
             {
@@ -202,13 +203,13 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 None => return ptr::null_mut(),
             };
             let lhead_ptr = lhead as *const _ as *mut _;
-            let deqidx = lhead.deqidx.load(Ordering::Acquire);
-            let enqidx = lhead.enqidx.load(Ordering::Acquire);
+            let deqidx = lhead.deqidx.load(Acquire);
+            let enqidx = lhead.enqidx.load(Acquire);
             if deqidx >= enqidx && lhead.next.load_ptr().is_null() {
                 return ptr::null_mut();
             }
 
-            let idx = lhead.deqidx.fetch_add(1, Ordering::AcqRel);
+            let idx = lhead.deqidx.fetch_add(1, AcqRel);
             if idx > BUFFER_SIZE - 1 {
                 let lnext = lhead.next.load_ptr();
                 if lnext.is_null() {
@@ -219,7 +220,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 }
                 continue;
             }
-            let item = lhead.items[idx].swap(taken, Ordering::AcqRel);
+            let item = lhead.items[idx].swap(taken, AcqRel);
             if item.is_null() || item == taken {
                 continue;
             }

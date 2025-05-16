@@ -53,9 +53,9 @@
  * Consistency: Linearizable
  * enqueue() progress: lock-free
  * dequeue() progress: lock-free
- * Memory Reclamation: Hazard Pointers (lock-free)
- * Uncontended enqueue: 1 FAA + 1 CAS + 1 HP
- * Uncontended dequeue: 1 FAA + 1 CAS + 1 HP
+ * Memory Reclamation: EBR
+ * Uncontended enqueue: 1 FAA + 1 CAS + EBR
+ * Uncontended dequeue: 1 FAA + 1 CAS + EBR
  *
  *
  * <p>
@@ -76,7 +76,7 @@ use crossbeam_utils::CachePadded;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 use std::{
     ptr,
-    sync::atomic::{AtomicPtr as StdAtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicPtr as StdAtomicPtr, AtomicUsize},
 };
 
 const BUFFER_SIZE: usize = 1024;
@@ -96,7 +96,7 @@ impl<T> Node<T> {
     fn new_with_item_ptr(item_ptr: *mut T) -> Self {
         let items: [StdAtomicPtr<T>; BUFFER_SIZE] =
             std::array::from_fn(|_| StdAtomicPtr::new(ptr::null_mut()));
-        items[0].store(item_ptr, Ordering::Relaxed);
+        items[0].store(item_ptr, Relaxed);
         Node {
             deqidx: AtomicUsize::new(0),
             enqidx: AtomicUsize::new(1),
@@ -140,7 +140,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
             let ltail_ref = unsafe { ltail.as_ref() }.unwrap();
             let ltail_ptr = ltail_ref as *const _ as *mut _;
 
-            let idx = ltail_ref.enqidx.fetch_add(1, Ordering::AcqRel);
+            let idx = ltail_ref.enqidx.fetch_add(1, AcqRel);
             if idx > BUFFER_SIZE - 1 {
                 if self.tail.load(Acquire, &guard).as_raw() != ltail_ptr {
                     continue;
@@ -152,16 +152,16 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                     match ltail_ref.next.compare_exchange(
                         Shared::null(),
                         new_node,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
+                        AcqRel,
+                        Relaxed,
                         &guard,
                     ) {
                         Ok(_) => {
                             let _ = self.tail.compare_exchange(
                                 ltail,
-                                ltail_ref.next.load(Ordering::Acquire, &guard),
-                                Ordering::AcqRel,
-                                Ordering::Relaxed,
+                                ltail_ref.next.load(Acquire, &guard),
+                                AcqRel,
+                                Relaxed,
                                 &guard,
                             );
                             return;
@@ -181,8 +181,8 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 .compare_exchange(
                     ptr::null_mut(),
                     item_ptr,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
+                    AcqRel,
+                    Relaxed,
                 )
                 .is_ok()
             {
@@ -195,18 +195,18 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
         let taken = taken_ptr::<T>();
         let guard = epoch::pin();
         loop {
-            let lhead = self.head.load(Ordering::Acquire, &guard);
+            let lhead = self.head.load(Acquire, &guard);
             let lhead_ref = match unsafe { lhead.as_ref() } {
                 Some(nn) => nn,
                 None => return ptr::null_mut(),
             };
-            let deqidx = lhead_ref.deqidx.load(Ordering::Acquire);
-            let enqidx = lhead_ref.enqidx.load(Ordering::Acquire);
+            let deqidx = lhead_ref.deqidx.load(Acquire);
+            let enqidx = lhead_ref.enqidx.load(Acquire);
             if deqidx >= enqidx && lhead_ref.next.load(Acquire, &guard).is_null() {
                 return ptr::null_mut();
             }
 
-            let idx = lhead_ref.deqidx.fetch_add(1, Ordering::AcqRel);
+            let idx = lhead_ref.deqidx.fetch_add(1, AcqRel);
             if idx > BUFFER_SIZE - 1 {
                 let lnext = lhead_ref.next.load(Acquire, &guard);
                 if lnext.is_null() {
@@ -223,7 +223,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 }
                 continue;
             }
-            let item = lhead_ref.items[idx].swap(taken, Ordering::AcqRel);
+            let item = lhead_ref.items[idx].swap(taken, AcqRel);
             if item.is_null() || item == taken {
                 continue;
             }
@@ -236,7 +236,7 @@ impl<T: Send + Sync + 'static> Drop for FAAArrayQueue<T> {
     fn drop(&mut self) {
         let guard = &epoch::pin();
         while !self.dequeue().is_null() {}
-        let head = self.head.load(Ordering::Acquire, guard);
+        let head = self.head.load(Acquire, guard);
         if !head.is_null() {
             unsafe { guard.defer_destroy(head) };
         }
