@@ -1,3 +1,5 @@
+// Partially implemented based on the article “BQ: A Lock-Free Queue with Batching”
+
 extern crate alloc;
 
 use alloc::boxed::Box;
