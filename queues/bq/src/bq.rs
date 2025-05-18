@@ -118,7 +118,7 @@ where
         T: 'hp,
     {
         loop {
-            let head_raw = self.head.load(Ordering::Acquire);
+            let head_raw = self.head.load(Ordering::SeqCst);
 
             if !is_ann(head_raw) {
                 let node_ptr = get_node_ptr(head_raw);
@@ -126,7 +126,7 @@ where
                 if node_ptr.is_null() {
                     continue;
                 }
-                let current_head_raw = self.head.load(Ordering::Acquire);
+                let current_head_raw = self.head.load(Ordering::SeqCst);
                 if current_head_raw != head_raw {
                     hp.reset_protection();
                     continue;
@@ -135,7 +135,7 @@ where
             } else {
                 let ann_ptr = get_ann_ptr(head_raw);
                 hp.protect_raw(ann_ptr);
-                let current_head_raw = self.head.load(Ordering::Acquire);
+                let current_head_raw = self.head.load(Ordering::SeqCst);
                 if current_head_raw != head_raw {
                     hp.reset_protection();
                     continue;
@@ -158,19 +158,19 @@ where
             match std_next_atomic_ptr.compare_exchange(
                 ptr::null_mut(),
                 new_node_ptr,
-                Ordering::Release,
-                Ordering::Acquire,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
             ) {
                 Ok(_) => {
                     let _ = unsafe { self.tail.compare_exchange_ptr(tail_node_ptr, new_node_ptr) };
                     return;
                 }
                 Err(actual_next_ptr) => {
-                    let head_raw = self.head.load(Ordering::Acquire);
+                    let head_raw = self.head.load(Ordering::SeqCst);
                     if is_ann(head_raw) {
                         let ann_ptr = get_ann_ptr(head_raw);
                         hp_ann.protect_raw(ann_ptr);
-                        let current_head_raw = self.head.load(Ordering::Acquire);
+                        let current_head_raw = self.head.load(Ordering::SeqCst);
                         if current_head_raw == head_raw {
                             self.execute_ann(ann_ptr);
                         }
@@ -204,7 +204,7 @@ where
                 .compare_exchange(
                     head_node_ptr,
                     next_node_ptr,
-                    Ordering::Release,
+                    Ordering::SeqCst,
                     Ordering::Relaxed,
                 )
                 .is_ok()
@@ -265,7 +265,7 @@ where
                 .compare_exchange(
                     old_head_ptr,
                     new_head_node as *const _ as *mut _,
-                    Ordering::Release,
+                    Ordering::SeqCst,
                     Ordering::Relaxed,
                 )
                 .is_ok()
@@ -298,7 +298,7 @@ where
                 .compare_exchange(
                     old_head_ptr,
                     tagged_ann_ptr,
-                    Ordering::Release,
+                    Ordering::SeqCst,
                     Ordering::Relaxed,
                 )
                 .is_ok()
@@ -320,18 +320,18 @@ where
         let mut ann_old_tail: *mut Node<T> = std::ptr::null_mut();
 
         loop {
-            let tail = unsafe { self.tail.as_std().load(Ordering::Acquire) };
+            let tail = unsafe { self.tail.as_std().load(Ordering::SeqCst) };
             let old_tail = ann.old_tail_node.safe_load(&mut hp_tail);
             if old_tail.is_some() {
                 ann_old_tail = old_tail.unwrap() as *const _ as *mut _;
-                if tag_ann(ann_ptr) != self.head.load(Ordering::Acquire) {
+                if tag_ann(ann_ptr) != self.head.load(Ordering::SeqCst) {
                     return;
                 }
                 break;
             }
             let tail_node = unsafe { hp_tail.try_protect(tail, self.tail.as_std()) };
             if tail_node.is_err() || tail_node.unwrap().is_none() {
-                if tag_ann(ann_ptr) != self.head.load(Ordering::Acquire) {
+                if tag_ann(ann_ptr) != self.head.load(Ordering::SeqCst) {
                     return;
                 }
                 continue;
@@ -364,7 +364,7 @@ where
         let _ = self.head.compare_exchange(
             tag_ann(ann_ptr),
             target_head_node_ptr,
-            Ordering::Release,
+            Ordering::SeqCst,
             Ordering::Relaxed,
         );
     }
