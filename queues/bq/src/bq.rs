@@ -205,7 +205,7 @@ where
                     head_node_ptr,
                     next_node_ptr,
                     Ordering::SeqCst,
-                    Ordering::Relaxed,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -266,7 +266,7 @@ where
                     old_head_ptr,
                     new_head_node as *const _ as *mut _,
                     Ordering::SeqCst,
-                    Ordering::Relaxed,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -299,7 +299,7 @@ where
                     old_head_ptr,
                     tagged_ann_ptr,
                     Ordering::SeqCst,
-                    Ordering::Relaxed,
+                    Ordering::SeqCst,
                 )
                 .is_ok()
             {
@@ -365,7 +365,7 @@ where
             tag_ann(ann_ptr),
             target_head_node_ptr,
             Ordering::SeqCst,
-            Ordering::Relaxed,
+            Ordering::SeqCst,
         );
     }
 
