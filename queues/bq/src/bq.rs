@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicPtr as StdAtomicPtr, Ordering};
 use haphazard::raw::Pointer;
 use haphazard::{AtomicPtr, Domain, HazardPointer};
 use std::mem::MaybeUninit;
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 
 const ANN_TAG: usize = 1;
 
@@ -448,7 +448,12 @@ where
             return self.last_deq_item.take();
         }
         let to_retire = self.current;
-        self.current = unsafe { (*self.current).next.as_std().swap(null_mut(), Ordering::SeqCst) };
+        self.current = unsafe {
+            (*self.current)
+                .next
+                .as_std()
+                .swap(null_mut(), Ordering::SeqCst)
+        };
         unsafe { Domain::global().retire_node(to_retire) };
         self.num_deqs_remaining -= 1;
         unsafe {
@@ -479,6 +484,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        hint::black_box,
+        sync::{atomic::AtomicBool, Arc},
+        thread,
+        time::Duration,
+    };
+
     use super::*;
     #[test]
     fn test_enqueue_dequeue_single() {
@@ -576,5 +588,56 @@ mod tests {
             q.enqueue(i);
         }
         drop(q);
+    }
+
+    #[test]
+    fn multithread_load_test() {
+        const NUM_PRODUCERS: usize = 4;
+        const NUM_CONSUMERS: usize = 4;
+        const BATCH_SIZE: usize = 64;
+        const TEST_DURATION: Duration = Duration::from_secs(100);
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let queue = Arc::new(BQueue::new());
+        let batch_data: Vec<u8> = vec![42u8; BATCH_SIZE];
+        let mut handles = Vec::with_capacity(NUM_PRODUCERS + NUM_CONSUMERS);
+
+        for producer_id in 0..NUM_PRODUCERS {
+            let q_clone = Arc::clone(&queue);
+            let stop_clone = Arc::clone(&stop_flag);
+            let data = batch_data.clone();
+
+            let h = thread::Builder::new()
+                .name(format!("producer-{}", producer_id))
+                .spawn(move || {
+                    while !stop_clone.load(Ordering::Acquire) {
+                        black_box(q_clone.enqueue_batch(data.iter().cloned()));
+                    }
+                })
+                .expect("Failed to spawn producer thread");
+            handles.push(h);
+        }
+
+        for consumer_id in 0..NUM_CONSUMERS {
+            let q_clone = Arc::clone(&queue);
+            let stop_clone = Arc::clone(&stop_flag);
+
+            let h = thread::Builder::new()
+                .name(format!("consumer-{}", consumer_id))
+                .spawn(move || {
+                    while !stop_clone.load(Ordering::Acquire) {
+                        let mut iter = black_box(q_clone.deq_batch(BATCH_SIZE));
+                        while black_box(iter.next()).is_some() {}
+                    }
+                })
+                .expect("Failed to spawn consumer thread");
+            handles.push(h);
+        }
+
+        thread::sleep(TEST_DURATION);
+        stop_flag.store(true, Ordering::Release);
+        for h in handles {
+            h.join().expect("Thread panicked");
+        }
     }
 }
