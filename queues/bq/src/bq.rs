@@ -414,7 +414,10 @@ where
     }
 }
 
-pub struct DeqBatchIterator<T> {
+pub struct DeqBatchIterator<T>
+where
+    T: Send + Sync,
+{
     num_deqs_remaining: usize,
     last_deq_item: Option<T>,
     current: *mut Node<T>,
@@ -444,16 +447,13 @@ where
             return None;
         }
         if self.num_deqs_remaining == 1 {
-            self.num_deqs_remaining -= 1;
-            return self.last_deq_item.take();
+        let to_retire = self.current;
+        self.num_deqs_remaining -= 1;
+        unsafe { Domain::global().retire_node(to_retire) };
+        return self.last_deq_item.take();
         }
         let to_retire = self.current;
-        self.current = unsafe {
-            (*self.current)
-                .next
-                .as_std()
-                .swap(null_mut(), Ordering::SeqCst)
-        };
+        self.current = unsafe { (*self.current).next.as_std().load(Ordering::SeqCst) };
         unsafe { Domain::global().retire_node(to_retire) };
         self.num_deqs_remaining -= 1;
         unsafe {
@@ -479,6 +479,15 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T> Drop for DeqBatchIterator<T>
+where
+    T: Send + Sync,
+{
+    fn drop(&mut self) {
+        while self.next().is_some() {}
     }
 }
 
