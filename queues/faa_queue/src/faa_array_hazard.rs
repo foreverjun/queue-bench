@@ -73,6 +73,7 @@
  */
 use crossbeam_utils::CachePadded;
 use haphazard::{AtomicPtr, Domain, Global, HazardPointer};
+use std::cell::RefCell;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
 use std::{
     ptr,
@@ -90,6 +91,11 @@ struct Node<T> {
     enqidx: AtomicUsize,
     next: AtomicPtr<Node<T>>,
     items: [StdAtomicPtr<T>; BUFFER_SIZE],
+}
+
+thread_local! {
+    static HP: RefCell<HazardPointer<'static>> =
+        RefCell::new(HazardPointer::new_in_domain(Domain::global()));
 }
 
 impl<T> Node<T> {
@@ -132,7 +138,6 @@ impl<T: Send + Sync> RetireHelpers<T> for Domain<Global> {
 pub struct FAAArrayQueue<T: Send + Sync + 'static> {
     head: CachePadded<AtomicPtr<Node<T>>>,
     tail: CachePadded<AtomicPtr<Node<T>>>,
-    domain: &'static Domain<Global>,
 }
 
 impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
@@ -141,15 +146,12 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
         FAAArrayQueue {
             head: CachePadded::new(unsafe { AtomicPtr::new(sentinel) }),
             tail: CachePadded::new(unsafe { AtomicPtr::new(sentinel) }),
-            domain: Domain::global(),
         }
     }
 
     pub fn enqueue(&self, item_ptr: *mut T) {
-        let mut hp_tail = HazardPointer::new_in_domain(self.domain);
-
-        loop {
-            let ltail = match unsafe { self.tail.load(&mut hp_tail) } {
+        HP.with_borrow_mut(|hp_tail| loop {
+            let ltail = match unsafe { self.tail.load(hp_tail) } {
                 Some(nn) => nn,
                 None => continue,
             };
@@ -167,6 +169,7 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                     if unsafe { ltail.next.compare_exchange_ptr(ptr::null_mut(), new_node) }.is_ok()
                     {
                         let _ = unsafe { self.tail.compare_exchange_ptr(ltail_ptr, new_node) };
+                        hp_tail.reset_protection();
                         return;
                     }
 
@@ -182,25 +185,28 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
                 .compare_exchange(ptr::null_mut(), item_ptr, AcqRel, Relaxed)
                 .is_ok()
             {
+                hp_tail.reset_protection();
                 return;
             }
             hp_tail.reset_protection();
-        }
+        })
     }
 
     pub fn dequeue(&self) -> *mut T {
-        let mut hp_head = HazardPointer::new_in_domain(self.domain);
         let taken = taken_ptr::<T>();
-
-        loop {
-            let lhead = match unsafe { self.head.load(&mut hp_head) } {
+        HP.with_borrow_mut(|hp_head| loop {
+            let lhead = match unsafe { self.head.load(hp_head) } {
                 Some(nn) => nn,
-                None => return ptr::null_mut(),
+                None => {
+                    hp_head.reset_protection();
+                    return ptr::null_mut();
+                }
             };
             let lhead_ptr = lhead as *const _ as *mut _;
             let deqidx = lhead.deqidx.load(Acquire);
             let enqidx = lhead.enqidx.load(Acquire);
             if deqidx >= enqidx && lhead.next.load_ptr().is_null() {
+                hp_head.reset_protection();
                 return ptr::null_mut();
             }
 
@@ -208,10 +214,11 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
             if idx > BUFFER_SIZE - 1 {
                 let lnext = lhead.next.load_ptr();
                 if lnext.is_null() {
+                    hp_head.reset_protection();
                     return ptr::null_mut();
                 }
                 if unsafe { self.head.compare_exchange_ptr(lhead_ptr, lnext) }.is_ok() {
-                    unsafe { self.domain.retire_node(lhead_ptr) };
+                    unsafe { Domain::global().retire_node(lhead_ptr) };
                 }
                 continue;
             }
@@ -219,8 +226,9 @@ impl<T: Send + Sync + 'static> FAAArrayQueue<T> {
             if item.is_null() || item == taken {
                 continue;
             }
+            hp_head.reset_protection();
             return item;
-        }
+        })
     }
 }
 
@@ -229,7 +237,7 @@ impl<T: Send + Sync + 'static> Drop for FAAArrayQueue<T> {
         while !self.dequeue().is_null() {}
         let ptr = self.head.load_ptr();
         if !ptr.is_null() {
-            unsafe { self.domain.retire_node(ptr) };
+            unsafe { Domain::global().retire_node(ptr) };
         }
     }
 }
