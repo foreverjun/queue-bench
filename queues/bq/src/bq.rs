@@ -447,10 +447,10 @@ where
             return None;
         }
         if self.num_deqs_remaining == 1 {
-        let to_retire = self.current;
-        self.num_deqs_remaining -= 1;
-        unsafe { Domain::global().retire_node(to_retire) };
-        return self.last_deq_item.take();
+            let to_retire = self.current;
+            self.num_deqs_remaining -= 1;
+            unsafe { Domain::global().retire_node(to_retire) };
+            return self.last_deq_item.take();
         }
         let to_retire = self.current;
         self.current = unsafe { (*self.current).next.as_std().load(Ordering::SeqCst) };
@@ -493,11 +493,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    const THREADS: usize = 4;
+    const PER_THREAD: usize = 10_000;
+
     use std::{
-        hint::black_box,
-        sync::{atomic::AtomicBool, Arc},
+        sync::{Arc, Barrier},
         thread,
-        time::Duration,
     };
 
     use super::*;
@@ -600,53 +601,54 @@ mod tests {
     }
 
     #[test]
-    fn multithread_load_test() {
-        const NUM_PRODUCERS: usize = 4;
-        const NUM_CONSUMERS: usize = 4;
-        const BATCH_SIZE: usize = 64;
-        const TEST_DURATION: Duration = Duration::from_secs(100);
+    fn test_concurrent_producers_consumers() {
+        let q = Arc::new(BQueue::<usize>::new());
+        let barrier = Arc::new(Barrier::new(THREADS * 2));
+        let mut handles = Vec::with_capacity(THREADS * 2);
 
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let queue = Arc::new(BQueue::new());
-        let batch_data: Vec<u8> = vec![42u8; BATCH_SIZE];
-        let mut handles = Vec::with_capacity(NUM_PRODUCERS + NUM_CONSUMERS);
-
-        for producer_id in 0..NUM_PRODUCERS {
-            let q_clone = Arc::clone(&queue);
-            let stop_clone = Arc::clone(&stop_flag);
-            let data = batch_data.clone();
-
-            let h = thread::Builder::new()
-                .name(format!("producer-{}", producer_id))
-                .spawn(move || {
-                    while !stop_clone.load(Ordering::Acquire) {
-                        black_box(q_clone.enqueue_batch(data.iter().cloned()));
-                    }
-                })
-                .expect("Failed to spawn producer thread");
-            handles.push(h);
+        for t in 0..THREADS {
+            let q_clone = q.clone();
+            let cbar = barrier.clone();
+            handles.push(thread::spawn(move || {
+                cbar.wait();
+                for i in 0..PER_THREAD {
+                    let p = t * PER_THREAD + i;
+                    q_clone.enqueue(p);
+                }
+            }));
         }
 
-        for consumer_id in 0..NUM_CONSUMERS {
-            let q_clone = Arc::clone(&queue);
-            let stop_clone = Arc::clone(&stop_flag);
-
-            let h = thread::Builder::new()
-                .name(format!("consumer-{}", consumer_id))
-                .spawn(move || {
-                    while !stop_clone.load(Ordering::Acquire) {
-                        let mut iter = black_box(q_clone.deq_batch(BATCH_SIZE));
-                        while black_box(iter.next()).is_some() {}
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for _ in 0..THREADS {
+            let q_clone = q.clone();
+            let cbar = barrier.clone();
+            let res = results.clone();
+            handles.push(thread::spawn(move || {
+                cbar.wait();
+                for _ in 0..PER_THREAD {
+                    loop {
+                        let r = q_clone.dequeue();
+                        if let Some(val) = r {
+                            res.lock().unwrap().push(val);
+                            break;
+                        }
+                        thread::yield_now();
                     }
-                })
-                .expect("Failed to spawn consumer thread");
-            handles.push(h);
+                }
+            }));
         }
 
-        thread::sleep(TEST_DURATION);
-        stop_flag.store(true, Ordering::Release);
         for h in handles {
-            h.join().expect("Thread panicked");
+            h.join().unwrap();
         }
+        let collected = results.lock().unwrap();
+        assert_eq!(collected.len(), THREADS * PER_THREAD);
+        let mut sorted = collected.clone();
+        sorted.sort_unstable();
+        for (i, v) in sorted.iter().enumerate() {
+            assert_eq!(*v, i);
+        }
+
+        assert!(q.dequeue().is_none());
     }
 }
